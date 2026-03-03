@@ -1,0 +1,214 @@
+// Schema Prisma Multi-Tenant
+// Banco de dados para sistema NEO com isolamento por empresa
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// MULTI-TENANCY: Company (Tenant)
+// ============================================
+model Company {
+  id          String   @id @default(uuid())
+  name        String
+  document    String   @unique // CNPJ/CPF
+  email       String   @unique
+  phone       String?
+  address     String?
+  city        String?
+  state       String?
+  country     String   @default("BR")
+  plan        String   @default("FREE") // FREE, STARTER, PRO, ENTERPRISE
+  status      String   @default("ACTIVE") // ACTIVE, SUSPENDED, CANCELED
+  settings    Json?    // Configurações específicas da empresa
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  deletedAt   DateTime? // Soft delete
+
+  // Relations
+  users       User[]
+  products    Product[]
+  sales       Sale[]
+  finance     Finance[]
+
+  @@index([status])
+  @@index([plan])
+}
+
+// ============================================
+// USERS - Usuários do sistema (por empresa)
+// ============================================
+model User {
+  id          String   @id @default(uuid())
+  companyId   String
+  email       String
+  password    String
+  name        String
+  role        String   @default("USER") // ADMIN, MANAGER, USER, VIEWER
+  phone       String?
+  avatar      String?
+  status      String   @default("ACTIVE") // ACTIVE, INACTIVE, SUSPENDED
+  lastLoginAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  deletedAt   DateTime?
+
+  // Relations
+  company     Company  @relation(fields: [companyId], references: [id])
+  sales       Sale[]   @relation("SaleSeller")
+  finances    Finance[]
+
+  @@unique([companyId, email])
+  @@index([companyId])
+  @@index([status])
+  @@index([role])
+}
+
+// ============================================
+// PRODUCTS - Produtos/Cadastro de itens
+// ============================================
+model Product {
+  id          String   @id @default(uuid())
+  companyId   String
+  name        String
+  description String?
+  sku         String?  // Stock Keeping Unit
+  barcode     String?  // Código de barras
+  category    String?
+  price       Decimal  @db.Decimal(10, 2)
+  cost        Decimal? @db.Decimal(10, 2)
+  stock       Int      @default(0)
+  minStock    Int      @default(0)
+  unit        String   @default("UN") // UN, KG, L, M, etc.
+  taxRate     Decimal? @db.Decimal(5, 2)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  deletedAt   DateTime?
+
+  // Relations
+  company     Company  @relation(fields: [companyId], references: [id])
+  saleItems   SaleItem[]
+
+  @@unique([companyId, sku])
+  @@index([companyId])
+  @@index([companyId, active])
+  @@index([category])
+}
+
+// ============================================
+// SALES - Vendas/Pedidos
+// ============================================
+model Sale {
+  id          String   @id @default(uuid())
+  companyId   String
+  sellerId    String?
+  customerId  String?  // Pode ser um cliente externo (não usuário)
+  customerName String?
+  customerDocument String?
+  status      String   @default("PENDING") // PENDING, CONFIRMED, SHIPPED, DELIVERED, CANCELED
+  subtotal    Decimal  @db.Decimal(10, 2)
+  discount    Decimal  @default(0) @db.Decimal(10, 2)
+  tax         Decimal  @default(0) @db.Decimal(10, 2)
+  total       Decimal  @db.Decimal(10, 2)
+  paymentMethod String? // CASH, CREDIT_CARD, DEBIT_CARD, PIX, BOLETO, TRANSFER
+  paymentStatus String @default("PENDING") // PENDING, PAID, PARTIAL, REFUNDED
+  notes       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  deletedAt   DateTime?
+
+  // Relations
+  company     Company  @relation(fields: [companyId], references: [id])
+  seller      User?    @relation("SaleSeller", fields: [sellerId], references: [id])
+  items       SaleItem[]
+  finance     Finance?
+
+  @@index([companyId])
+  @@index([companyId, status])
+  @@index([companyId, createdAt])
+  @@index([paymentStatus])
+}
+
+// ============================================
+// SALE ITEMS - Itens da venda
+// ============================================
+model SaleItem {
+  id          String   @id @default(uuid())
+  saleId      String
+  productId   String
+  quantity    Int
+  unitPrice   Decimal  @db.Decimal(10, 2)
+  subtotal    Decimal  @db.Decimal(10, 2)
+  discount    Decimal  @default(0) @db.Decimal(10, 2)
+  tax         Decimal  @default(0) @db.Decimal(10, 2)
+  total       Decimal  @db.Decimal(10, 2)
+  createdAt   DateTime @default(now())
+
+  // Relations
+  sale        Sale     @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  product     Product  @relation(fields: [productId], references: [id])
+
+  @@index([saleId])
+  @@index([productId])
+}
+
+// ============================================
+// FINANCE - Controle financeiro (contas a pagar/receber)
+// ============================================
+model Finance {
+  id          String   @id @default(uuid())
+  companyId   String
+  userId      String?
+  saleId      String?  // Vinculado a uma venda (receita)
+  type        String   // INCOME (receita), EXPENSE (despesa)
+  category    String   // SALES, SERVICES, RENT, SALARY, TAXES, SUPPLIES, OTHER
+  description String
+  amount      Decimal  @db.Decimal(10, 2)
+  dueDate     DateTime
+  paidDate    DateTime?
+  status      String   @default("PENDING") // PENDING, PAID, OVERDUE, CANCELED
+  paymentMethod String?
+  notes       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  deletedAt   DateTime?
+
+  // Relations
+  company     Company  @relation(fields: [companyId], references: [id])
+  user        User?    @relation(fields: [userId], references: [id])
+  sale        Sale?    @relation(fields: [saleId], references: [id])
+
+  @@index([companyId])
+  @@index([companyId, type])
+  @@index([companyId, status])
+  @@index([dueDate])
+  @@index([companyId, dueDate, status])
+}
+
+// ============================================
+// AUDIT LOG - Logs de auditoria (opcional)
+// ============================================
+model AuditLog {
+  id          String   @id @default(uuid())
+  companyId   String?
+  userId      String?
+  action      String   // CREATE, UPDATE, DELETE, LOGIN, LOGOUT
+  entity      String   // Nome da entidade afetada
+  entityId    String?
+  oldData     Json?
+  newData     Json?
+  ipAddress   String?
+  userAgent   String?
+  createdAt   DateTime @default(now())
+
+  @@index([companyId])
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+}
